@@ -38,6 +38,7 @@ cdef extern from "PJON.h":
     const uint16_t _PJON_PACKET_MAX_LENGTH "PJON_PACKET_MAX_LENGTH"
     const uint32_t _LUDP_RESPONSE_TIMEOUT "LUDP_RESPONSE_TIMEOUT"
 
+
     cdef struct PJON_Packet_Info:
         uint8_t header
         uint16_t id
@@ -47,6 +48,9 @@ cdef extern from "PJON.h":
         uint8_t sender_bus_id[4]
         uint16_t port
         void *custom_pointer
+
+    cdef struct PJON_Packet:
+        uint16_t state
 
     cdef cppclass _localudp "LocalUDP":
         void set_port(uint16_t port)
@@ -99,6 +103,7 @@ cdef extern from "PJON.h":
         uint16_t send(uint8_t id, const char *string, uint16_t length, uint8_t  header, uint16_t p_id, uint16_t requested_port) except *
         uint16_t send_repeatedly(uint8_t id, const char *string, uint16_t length, uint32_t timing, uint8_t  header, uint16_t p_id, uint16_t requested_port) except *
         uint16_t reply(const char *packet, uint16_t length, uint8_t  header, uint16_t p_id, uint16_t requested_port) except *
+        PJON_Packet packets[10]
 
 PJON_BROADCAST = _PJON_BROADCAST
 PJON_ACK = _PJON_ACK
@@ -107,11 +112,17 @@ PJON_BUSY = _PJON_BUSY
 PJON_FAIL = _PJON_FAIL
 PJON_TO_BE_SENT = _PJON_TO_BE_SENT
 
+PJON_ERROR_CONNECTION_LOST = PJON_CONNECTION_LOST
+PJON_ERROR_PACKETS_BUFFER_FULL = PJON_PACKETS_BUFFER_FULL
+PJON_ERROR_CONTENT_TOO_LONG = PJON_CONTENT_TOO_LONG
+PJON_ERROR_ID_ACQUISITION_FAIL = PJON_ID_ACQUISITION_FAIL
+PJON_ERROR_DEVICES_BUFFER_FULL = PJON_DEVICES_BUFFER_FULL
+                               
 PJON_MAX_PACKETS = _PJON_MAX_PACKETS
 LUDP_RESPONSE_TIMEOUT = _LUDP_RESPONSE_TIMEOUT
 PJON_PACKET_MAX_LENGTH = _PJON_PACKET_MAX_LENGTH
 
-class PJON_Connection_Lost(BaseException):
+class PJON_Connection_Lost(Exception):
     pass
 
 class PJON_Packets_Buffer_Full(BaseException):
@@ -130,28 +141,6 @@ class PJON_Unable_To_Create_Bus(BaseException):
     pass
 
 
-cdef void error_handler(uint8_t code, uint16_t data, void *custom_pointer) except *:
-
-    # raise Exception('Code: {} Data: {}'.format(code, data))
-
-    if code == PJON_CONNECTION_LOST:
-        raise PJON_Connection_Lost()
-
-    if code == PJON_PACKETS_BUFFER_FULL:
-        raise PJON_Packets_Buffer_Full()
-
-    if code == PJON_CONTENT_TOO_LONG:
-        raise PJON_Content_Too_Long()
-
-    if code == PJON_DEVICES_BUFFER_FULL:
-        raise PJON_Devices_Buffer_Full()
-
-    if code == PJON_ID_ACQUISITION_FAIL:
-        raise PJON_Id_Acquisition_Fail()
-
-    raise Exception("PJON Error Code Unknown")
-
-
 cdef object make_packet_info_dict(const PJON_Packet_Info &_pi):
     return dict(
         header=_pi.header,
@@ -167,6 +156,10 @@ cdef void _pjon_receiver(uint8_t *payload, uint16_t length, const PJON_Packet_In
     cdef PJONBUS self = <object> _pi.custom_pointer
     self.receive(<bytes>payload[:length], length, make_packet_info_dict(_pi))
 
+cdef void _pjon_error_handler(uint8_t code, uint16_t data, void *custom_pointer):
+    cdef PJONBUS self = <object> custom_pointer
+    self.error_handler(<int> code, <int> data)
+
 
 cdef class PJONBUS:
     cdef PJON[_any] *bus
@@ -175,10 +168,13 @@ cdef class PJONBUS:
         self.bus = new PJON[_any]()
         self.bus.set_custom_pointer(<void*> self)
         self.bus.set_receiver(&_pjon_receiver)
-        self.bus.set_error(&error_handler)
+        self.bus.set_error(&_pjon_error_handler)
 
     def __dealloc__(self):
         del self.bus
+
+    def get_packets_states(self):
+        return [self.bus.packets[i].state for i in range(PJON_MAX_PACKETS)]
 
     def packet_overhead(self, header=PJON_NO_HEADER):
         return self.bus.packet_overhead(header)
@@ -209,6 +205,9 @@ cdef class PJONBUS:
         return self.bus.strategy.can_start()
 
     def receive(self, payload, length, packet_info):
+        raise NotImplementedError()
+
+    def error_handler(self, code, data):
         raise NotImplementedError()
 
     def device_id(self):
